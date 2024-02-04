@@ -1,0 +1,23 @@
+from flask import Flask, request
+import subprocess
+import os
+
+app = Flask(__name__)
+
+@app.route('/display', methods=['GET'])
+def control_display():
+    cmd = request.args.get('cmd')
+
+    if cmd == 'on':
+        subprocess.run(['DISPLAY=:0 xset dpms force on'], shell=True)
+    elif cmd == 'off':
+        subprocess.run(['DISPLAY=:0 xset dpms force off'], shell=True)
+    else:
+        return "Invalid command", 400
+
+    return f"Display turned {cmd}", 200
+
+if __name__ == "__main__":
+    subprocess.run(['export DISPLAY=:0.0'], shell=True)
+    is_debug_mode = os.environ.get('http.debug', 'false').lower() == 'true'
+    app.run(debug=is_debug_mode, port=8080,host='0.0.0.0')
