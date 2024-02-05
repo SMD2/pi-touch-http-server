@@ -1,8 +1,10 @@
 from flask import Flask, request
 import subprocess
 import os
+import screensaver
 
 app = Flask(__name__)
+service = screensaver.Screensaver()
 
 @app.route('/display', methods=['GET'])
 def control_display():
@@ -22,7 +24,8 @@ def control_screensaver():
     cmd = request.args.get('cmd')
 
     if cmd == 'on':
-        subprocess.run(['feh --fullscreen --auto-zoom --action1 ";killall feh" --borderless --on-last-slide quit --auto-reload  /opt/google-photos-screensaver/photo.jpg'], shell=True)
+        #subprocess.run(['feh --fullscreen --auto-zoom --action1 ";killall feh" --borderless --on-last-slide quit --auto-reload  /opt/google-photos-screensaver/photo.jpg &'], shell=True)
+        service.start()
     elif cmd == 'off':
         subprocess.run(['killall feh'], shell=True)
     else:
