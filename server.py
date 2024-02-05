@@ -17,6 +17,19 @@ def control_display():
 
     return f"Display turned {cmd}", 200
 
+@app.route('/screensaver', methods=['GET'])
+def control_display():
+    cmd = request.args.get('cmd')
+
+    if cmd == 'on':
+        subprocess.run(['feh --fullscreen --auto-zoom --action1 ";killall feh" --borderless --on-last-slide --auto-reload quit /opt/google-photos-screensaver/photo.jpg'], shell=True)
+    elif cmd == 'off':
+        subprocess.run(['killall feh'], shell=True)
+    else:
+        return "Invalid command", 400
+
+    return f"Display turned {cmd}", 200
+
 if __name__ == "__main__":
     subprocess.run(['export DISPLAY=:0.0'], shell=True)
     is_debug_mode = os.environ.get('http.debug', 'false').lower() == 'true'
