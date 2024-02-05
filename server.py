@@ -18,7 +18,7 @@ def control_display():
     return f"Display turned {cmd}", 200
 
 @app.route('/screensaver', methods=['GET'])
-def control_display():
+def control_screensaver():
     cmd = request.args.get('cmd')
 
     if cmd == 'on':
@@ -28,7 +28,7 @@ def control_display():
     else:
         return "Invalid command", 400
 
-    return f"Display turned {cmd}", 200
+    return f"Screensaver turned {cmd}", 200
 
 if __name__ == "__main__":
     subprocess.run(['export DISPLAY=:0.0'], shell=True)
