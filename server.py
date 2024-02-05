@@ -22,7 +22,7 @@ def control_screensaver():
     cmd = request.args.get('cmd')
 
     if cmd == 'on':
-        subprocess.run(['feh --fullscreen --auto-zoom --action1 ";killall feh" --borderless --on-last-slide --auto-reload quit /opt/google-photos-screensaver/photo.jpg'], shell=True)
+        subprocess.run(['feh --fullscreen --auto-zoom --action1 ";killall feh" --borderless --on-last-slide quit --auto-reload  /opt/google-photos-screensaver/photo.jpg'], shell=True)
     elif cmd == 'off':
         subprocess.run(['killall feh'], shell=True)
     else:
