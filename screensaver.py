@@ -19,8 +19,12 @@ class Screensaver:
     def _run(self):
         # This method runs in a separate thread
         while self.running:
-            get_random_photo_and_save()
-            time.sleep(120)  # Wait for 2 minutes before fetching the next photo
+            try: 
+                get_random_photo_and_save()
+            except:
+                print("Screensaver error, this is expected during server initialization")
+            finally:
+                time.sleep(120)  # Wait for 2 minutes before fetching the next photo
 
     def start(self):
         if not self.running:
@@ -61,7 +65,8 @@ def get_service():
     return build('photoslibrary', 'v1', credentials=creds, static_discovery=False)
 
 def download_image(url, filename):
-    response = requests.get(url)
+    full_resolution_url = url + '=d'  # Append '=d' to get the full resolution image
+    response = requests.get(full_resolution_url)
     if response.status_code == 200:
         with open(filename, 'wb') as file:
             file.write(response.content)
@@ -105,7 +110,9 @@ def get_random_photo_and_save():
 
 def displayOnScreen():
     subprocess.run(['killall feh'], shell=True)
-    subprocess.run(['feh --fullscreen --auto-zoom --action1 ";killall feh" --borderless --on-last-slide quit --auto-reload  screensaver//photo.jpg &'], shell=True)
+    #Resize image to fit 9:16 ratio
+    subprocess.run(['convert screensaver/photo.jpg -resize 1920x1080^ -gravity center -crop 1920x1080+0+0 +repage screensaver/photo.jpg'], shell=True)
+    subprocess.run(['feh --fullscreen --auto-zoom --action1 ";killall feh" --borderless --on-last-slide quit --auto-reload  screensaver/photo.jpg &'], shell=True)
 
 
 
