@@ -1,126 +1,165 @@
 import os
 import random
 import requests
-import schedule
 import threading
 import time
 import pickle
 import subprocess
+import json
 
-from google.auth.transport.requests import Request
+from google.auth.transport.requests import Request, AuthorizedSession
 from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+
+# Scope used by the Google Photos Photo Picker. The picker only grants access to
+# media items explicitly selected by the user, so this scope is less sensitive
+# than the full library read scope that recently started to require app
+# verification.
+PICKER_SCOPE = ["https://www.googleapis.com/auth/photoslibrary.readonly"]
+TOKEN_PATH = "screensaver/token.pickle"
+SELECTION_FILE = "screensaver/selection.json"
+
 
 class Screensaver:
-    def __init__(self):
+    """Download and display photos selected via the Google Photo Picker."""
+
+    def __init__(self, selection_file: str = SELECTION_FILE):
         self.running = False
         self.thread = None
+        self.selection_file = selection_file
+        self.media_item_ids = self._load_media_item_ids()
 
+    # ------------------------------------------------------------------ utils
+    def _load_media_item_ids(self):
+        if os.path.exists(self.selection_file):
+            with open(self.selection_file, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        return []
+
+    def refresh_selection(self):
+        """Open the Photo Picker and persist the chosen media item ids.
+
+        The Photo Picker runs in the user's browser as part of the OAuth flow.
+        When the user finishes selecting items, the API responds with a set of
+        media item identifiers that can later be retrieved without listing the
+        entire photo library.
+        """
+
+        creds = get_credentials()
+        session = AuthorizedSession(creds)
+        response = session.post(
+            "https://photoslibrary.googleapis.com/v1/picker:pick",
+            json={"maxSelect": 100},
+        )
+        response.raise_for_status()
+        ids = [item["mediaItemId"] for item in response.json().get("mediaItems", [])]
+        with open(self.selection_file, "w", encoding="utf-8") as fh:
+            json.dump(ids, fh)
+        self.media_item_ids = ids
+
+    # ------------------------------------------------------------------ thread
     def _run(self):
-        # This method runs in a separate thread
         while self.running:
-            try: 
-                get_random_photo_and_save()
-            except:
-                print("Screensaver error, this is expected during server initialization")
+            try:
+                self.get_random_photo_and_save()
+            except Exception as exc:  # pragma: no cover - broad but intentional
+                print(f"Screensaver error: {exc}")
             finally:
-                time.sleep(120)  # Wait for 2 minutes before fetching the next photo
+                time.sleep(120)
 
     def start(self):
         if not self.running:
             self.running = True
-            self.thread = threading.Thread(target=self._run)
+            self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
             print("Screensaver Service started.")
 
     def stop(self):
         if self.running:
             self.running = False
-            self.thread.join()  # Wait for the thread to finish
+            self.thread.join()
             print("Screensaver Service stopped.")
 
-# If modifying these scopes, delete the file token.pickle.
-SCOPES = ['https://www.googleapis.com/auth/photoslibrary.readonly']
+    # ----------------------------------------------------------------- photos
+    def get_random_photo_and_save(self):
+        if not self.media_item_ids:
+            print("No media selected. Run refresh_selection() to choose photos via Photo Picker.")
+            return
 
-def get_service():
+        creds = get_credentials()
+        session = AuthorizedSession(creds)
+        photo_id = random.choice(self.media_item_ids)
+        resp = session.get(f"https://photoslibrary.googleapis.com/v1/mediaItems/{photo_id}")
+        resp.raise_for_status()
+        base_url = resp.json()["baseUrl"]
+        filename = "screensaver/photo.jpg"
+        download_image(base_url, filename)
+        displayOnScreen()
+
+
+# -------------------------------------------------------------------- auth util
+
+def get_credentials():
+    """Obtain OAuth credentials for the Photo Picker."""
     creds = None
-    # The file token.pickle stores the user's access and refresh tokens, and is
-    # created automatically when the authorization flow completes for the first
-    # time.
-    if os.path.exists('screensaver/token.pickle'):
-        with open('screensaver/token.pickle', 'rb') as token:
+    if os.path.exists(TOKEN_PATH):
+        with open(TOKEN_PATH, "rb") as token:
             creds = pickle.load(token)
-    # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
-                'screensaver/credentials.json', SCOPES)
+                "screensaver/credentials.json", PICKER_SCOPE
+            )
+            # run_local_server launches a browser which hosts the Photo Picker UI.
             creds = flow.run_local_server(port=8080)
-        # Save the credentials for the next run
-        with open('screensaver/token.pickle', 'wb') as token:
+        with open(TOKEN_PATH, "wb") as token:
             pickle.dump(creds, token)
+    return creds
 
-    return build('photoslibrary', 'v1', credentials=creds, static_discovery=False)
+
+# ------------------------------------------------------------------ image util
 
 def download_image(url, filename):
-    full_resolution_url = url + '=d'  # Append '=d' to get the full resolution image
+    full_resolution_url = url + "=d"  # Request full-resolution image
     response = requests.get(full_resolution_url)
     if response.status_code == 200:
-        with open(filename, 'wb') as file:
+        with open(filename, "wb") as file:
             file.write(response.content)
 
-def get_random_photo_and_save():
-    service = get_service()
-    
-    # List all albums
-    albums_result = service.albums().list(pageSize=50).execute()
-    albums = albums_result.get('albums', [])
-    
-    # Find the specific album by its title
-    target_album_title = 'PiTouch'  
-    target_album_id = None
-    for album in albums:
-        if album['title'] == target_album_title:
-            target_album_id = album['id']
-            break
-    
-    if not target_album_id:
-        print(f'Album "{target_album_title}" not found.')
-        return
-    
-    # List media items in the specific album
-    search_result = service.mediaItems().search(body={
-        'albumId': target_album_id,
-        'pageSize': 100
-    }).execute()
-    
-    items = search_result.get('mediaItems', [])
-    
-    if not items:
-        print(f'No items found in album "{target_album_title}".')
-    else:
-        # Choose a random photo
-        photo = random.choice(items)
-        filename = f"screensaver/photo.jpg"
-        download_image(photo['baseUrl'], filename)
-        print(f'Downloaded {filename}')
-        displayOnScreen()
 
 def displayOnScreen():
-    subprocess.run(['killall feh'], shell=True)
-    #Resize image to fit 9:16 ratio
-    subprocess.run(['convert screensaver/photo.jpg -resize 1920x1080^ -gravity center -crop 1920x1080+0+0 +repage screensaver/photo.jpg'], shell=True)
-    subprocess.run(['feh --fullscreen --auto-zoom --action1 ";killall feh" --borderless --on-last-slide quit --auto-reload  screensaver/photo.jpg &'], shell=True)
-
-
-
-#schedule.every(2).minutes.do(get_random_photo_and_save)
-#get_random_photo_and_save()
-
-#while True:
-#    schedule.run_pending()
-#    time.sleep(1)
-    
-
+    subprocess.run(["killall", "feh"], check=False)
+    # Resize image to fit 9:16 ratio
+    subprocess.run(
+        [
+            "convert",
+            "screensaver/photo.jpg",
+            "-resize",
+            "1920x1080^",
+            "-gravity",
+            "center",
+            "-crop",
+            "1920x1080+0+0",
+            "+repage",
+            "screensaver/photo.jpg",
+        ],
+        check=False,
+    )
+    subprocess.run(
+        [
+            "feh",
+            "--fullscreen",
+            "--auto-zoom",
+            "--action1",
+            ";killall feh",
+            "--borderless",
+            "--on-last-slide",
+            "quit",
+            "--auto-reload",
+            "screensaver/photo.jpg",
+            "&",
+        ],
+        shell=True,
+        check=False,
+    )
