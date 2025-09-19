@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 import uuid
+import wsgiref.simple_server
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -16,7 +17,7 @@ import requests
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import AuthorizedSession, Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow, _RedirectWSGIApp, _WSGIRequestHandler
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,14 @@ class PhotosPickerServiceError(Exception):
 
 class CredentialConfigurationError(PhotosPickerServiceError):
     """Raised when OAuth credentials are not available."""
+
+
+class OAuthAuthorizationRequired(PhotosPickerServiceError):
+    """Raised when an OAuth authorization step must be completed."""
+
+    def __init__(self, authorization_url: str) -> None:
+        super().__init__("OAuth authorization required.")
+        self.authorization_url = authorization_url
 
 
 class PhotosPickerApiError(PhotosPickerServiceError):
@@ -87,6 +96,8 @@ class PhotosPickerService:
         self._states: Dict[str, _SessionState] = {}
         self._threads: Dict[str, threading.Thread] = {}
         self._slideshow_thread: Optional[threading.Thread] = None
+        self._oauth_thread: Optional[threading.Thread] = None
+        self._pending_authorization_url: Optional[str] = None
 
     # ------------------------------------------------------------------
     # OAuth handling
@@ -122,22 +133,79 @@ class PhotosPickerService:
                     logger.warning("Failed to refresh Google Photos Picker credentials: %s", exc)
                     creds = None
 
-            if not creds or not creds.valid:
-                if not os.path.exists(self._credentials_path):
-                    raise CredentialConfigurationError(
-                        f"OAuth client secrets not found at {self._credentials_path}. "
-                        "Ensure the Google Photos Picker credentials are available."
-                    )
-                flow = InstalledAppFlow.from_client_secrets_file(self._credentials_path, self.SCOPES)
-                creds = flow.run_local_server(port=self.DEFAULT_OAUTH_PORT, open_browser=False)
+            if creds and creds.valid:
+                self._creds = creds
+                return creds
 
-            self._store_credentials(creds)
-            self._creds = creds
-            return creds
+            if not os.path.exists(self._credentials_path):
+                raise CredentialConfigurationError(
+                    f"OAuth client secrets not found at {self._credentials_path}. "
+                    "Ensure the Google Photos Picker credentials are available."
+                )
+
+            if self._oauth_thread and self._oauth_thread.is_alive():
+                if not self._pending_authorization_url:
+                    raise PhotosPickerServiceError("OAuth authorization is in progress.")
+                raise OAuthAuthorizationRequired(self._pending_authorization_url)
+
+            flow = InstalledAppFlow.from_client_secrets_file(self._credentials_path, self.SCOPES)
+            authorization_url = self._start_oauth_local_server(flow)
+            self._pending_authorization_url = authorization_url
+            raise OAuthAuthorizationRequired(authorization_url)
 
     def _authorized_session(self) -> AuthorizedSession:
         creds = self._ensure_credentials()
         return AuthorizedSession(creds)
+
+    def _start_oauth_local_server(self, flow: InstalledAppFlow) -> str:
+        """Start a background OAuth local server and return the authorization URL."""
+
+        success_message = "Authentication complete. You may close this window."
+        wsgi_app = _RedirectWSGIApp(success_message)
+
+        wsgiref.simple_server.WSGIServer.allow_reuse_address = False
+        local_server = wsgiref.simple_server.make_server(
+            "localhost",
+            self.DEFAULT_OAUTH_PORT,
+            wsgi_app,
+            handler_class=_WSGIRequestHandler,
+        )
+
+        redirect_uri = f"http://localhost:{local_server.server_port}/"
+        flow.redirect_uri = redirect_uri
+
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="consent",
+        )
+        logger.info("Generated OAuth authorization URL: %s", auth_url)
+
+        def _serve() -> None:
+            try:
+                local_server.handle_request()
+                authorization_response = getattr(wsgi_app, "last_request_uri", None)
+                if not authorization_response:
+                    logger.error("OAuth authorization did not complete; no response received.")
+                    return
+                authorization_response = authorization_response.replace("http", "https", 1)
+                flow.fetch_token(authorization_response=authorization_response)
+                creds = flow.credentials
+                with self._cred_lock:
+                    self._store_credentials(creds)
+                    self._creds = creds
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.error("OAuth authorization failed: %s", exc)
+            finally:
+                local_server.server_close()
+                with self._cred_lock:
+                    self._oauth_thread = None
+                    self._pending_authorization_url = None
+
+        thread = threading.Thread(target=_serve, name="photos-picker-oauth", daemon=True)
+        self._oauth_thread = thread
+        thread.start()
+        return auth_url
 
     # ------------------------------------------------------------------
     # Helper utilities

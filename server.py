@@ -1,11 +1,13 @@
+import socket
 import uuid
 from collections import deque
 import subprocess
 
-from flask import Flask, jsonify, request, send_from_directory, url_for
+from flask import Flask, jsonify, redirect, request, send_from_directory, url_for
 
 from screensaver import (
     CredentialConfigurationError,
+    OAuthAuthorizationRequired,
     PhotosPickerApiError,
     PhotosPickerService,
     PhotosPickerServiceError,
@@ -16,6 +18,29 @@ picker_service = PhotosPickerService()
 
 # Initialize an in-memory queue using deque from collections for efficient FIFO operations.
 messages_queue = deque()
+
+
+def _build_base_url() -> str:
+    scheme = request.scheme or "http"
+    host_header = request.host or request.headers.get("Host", "")
+    port: str | None = None
+
+    if host_header and ":" in host_header:
+        _, port = host_header.rsplit(":", 1)
+    else:
+        server_port = request.environ.get("SERVER_PORT")
+        port = str(server_port) if server_port else None
+
+    hostname = socket.gethostname()
+    base_host = f"{hostname}.local"
+
+    if port and port not in {"80", "443"}:
+        base_url = f"{scheme}://{base_host}:{port}"
+    else:
+        base_url = f"{scheme}://{base_host}"
+
+    app.logger.info("Computed base URL: %s", base_url)
+    return base_url
 
 
 @app.route('/display', methods=['GET'])
@@ -59,6 +84,9 @@ def create_selection_session():
             picking_config=picking_config,
             request_id=request_id_value,
         )
+    except OAuthAuthorizationRequired as exc:
+        app.logger.info("OAuth authorization required, redirecting to %s", exc.authorization_url)
+        return redirect(exc.authorization_url, code=307)
     except CredentialConfigurationError as exc:
         return jsonify({'error': str(exc)}), 500
     except PhotosPickerApiError as exc:
@@ -73,8 +101,10 @@ def create_selection_session():
     except PhotosPickerServiceError as exc:
         return jsonify({'error': str(exc)}), 500
 
+    base_url = _build_base_url()
+    status_path = url_for('get_selection_session', sessionId=session_data['id'])
+    status_url = f"{base_url}{status_path}"
     status_payload = picker_service.get_status(session_data['id'])
-    status_url = url_for('get_selection_session', sessionId=session_data['id'], _external=True)
 
     response = {
         'sessionId': session_data['id'],
@@ -104,6 +134,10 @@ def get_selection_session():
     status_payload = picker_service.get_status(session_id)
     if not status_payload:
         return jsonify({'error': 'Session not found.'}), 404
+
+    base_url = _build_base_url()
+    status_payload = dict(status_payload)
+    status_payload['statusEndpoint'] = f"{base_url}{url_for('get_selection_session', sessionId=session_id)}"
 
     return jsonify(status_payload), 200
 
