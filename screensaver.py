@@ -305,24 +305,28 @@ class PhotosPickerService:
         return ""
 
     def _download_media_items(self, session_id: str, media_items: List[Dict[str, Any]]) -> List[str]:
+        print (f"Downloading {len(media_items)} media items for session {session_id}")
         if not media_items:
             return []
 
         session = self._authorized_session()
         downloaded_files: List[str] = []
         for index, item in enumerate(media_items, start=1):
-            base_url = item.get("baseUrl")
+            mediaFile = item.get("mediaFile")
+            base_url = mediaFile.get("baseUrl")
             if not base_url:
+                print (f"Skipping media item {item.get('id', '<unknown>')} with no baseUrl")
                 continue
 
-            filename = item.get("filename") or f"{session_id}_{index}"
+            filename = mediaFile.get("filename") or f"{session_id}_{index}"
             filename = self._sanitize_filename(filename)
             if not os.path.splitext(filename)[1]:
-                filename += self._extension_from_mime(item.get("mimeType"))
+                filename += self._extension_from_mime(mediaFile.get("mimeType"))
             file_path = os.path.join(self._photos_dir, filename)
 
             if os.path.exists(file_path):
                 downloaded_files.append(os.path.relpath(file_path, self._storage_dir))
+                print (f"Media item {item.get('id', '<unknown>')} already downloaded as {filename}")
                 continue
 
             download_url = f"{base_url}=d"
