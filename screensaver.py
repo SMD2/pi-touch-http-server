@@ -88,6 +88,9 @@ class PhotosPickerService:
         self._threads: Dict[str, threading.Thread] = {}
         self._slideshow_thread: Optional[threading.Thread] = None
 
+        # Start slideshow with existing photos if any are available
+        self._start_slideshow()
+
     # ------------------------------------------------------------------
     # OAuth handling
     # ------------------------------------------------------------------
@@ -384,11 +387,10 @@ class PhotosPickerService:
             logger.debug("Failed to terminate existing feh instances", exc_info=True)
 
         cmd = [
-            "feh",
-            "--fullscreen",
-            "--auto-zoom",
-            "--borderless",
-            "--quiet",
+            'feh',
+            '--on-last-slide', 'quit',
+            '--fullscreen',
+            '--zoom', 'fill',
             photo_path,
         ]
         try:
